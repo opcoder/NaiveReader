@@ -61,6 +61,8 @@ class RCModel(object):
 
         # the vocab
         self.vocab = vocab
+        if hasattr(args, 'char_vocab'):
+            self.char_vocab = args.char_vocab
 
         # session info
         sess_config = tf.ConfigProto()
@@ -74,6 +76,9 @@ class RCModel(object):
 
         # initialize the model
         self.sess.run(tf.global_variables_initializer())
+        summary_writer = tf.summary.FileWriter(args.model_dir, self.sess.graph)
+        self.logger.info('summary writer')
+
 
     def _build_graph(self):
         """
@@ -82,7 +87,14 @@ class RCModel(object):
         start_t = time.time()
         self._setup_placeholders()
         self._embed()
-        self._encode()
+        
+        self._char_embed()
+        self._char_encode()
+        p_embed = tf.concat((self.p_emb, self.p_char_state), axis = 2)
+        q_embed = tf.concat((self.q_emb, self.q_char_state), axis = 2)
+        self._combine_encode(p_embed, q_embed)
+
+        #self._encode()
         self._match()
         self._fuse()
         self._decode()
@@ -103,6 +115,62 @@ class RCModel(object):
         self.start_label = tf.placeholder(tf.int32, [None])
         self.end_label = tf.placeholder(tf.int32, [None])
         self.dropout_keep_prob = tf.placeholder(tf.float32)
+        # add char-level embeding
+        if hasattr(self, 'char_vocab'):
+            # batch x pragraph_len x token_len
+            self.p_char = tf.placeholder(tf.int32, [None, None, None])
+            self.q_char = tf.placeholder(tf.int32, [None, None, None])
+            self.p_char_length = tf.placeholder(tf.int32, [None, None])
+            self.q_char_length = tf.placeholder(tf.int32, [None, None])
+    
+    def _char_embed(self):
+        """
+        The character-level embedding
+        """
+        with tf.device('/cpu:0'), tf.variable_scope('char_embedding'):
+            self.char_embeddings = tf.get_variable(
+                'char_embeddings',
+                shape=(self.char_vocab.size(), self.char_vocab.embed_dim),
+                initializer=tf.constant_initializer(self.char_vocab.embeddings),
+                trainable=True
+            )
+            # batch x p_len x char_len x char_embed_size
+            self.p_char_emb = tf.nn.embedding_lookup(self.char_embeddings, self.p_char)
+            self.q_char_emb = tf.nn.embedding_lookup(self.char_embeddings, self.q_char)
+
+    def _char_encode(self):
+        """
+        Encoding char_embedding so as to align with word_embedding
+        """
+        with tf.variable_scope('passage_char_encoding'):
+            shapes = tf.shape(self.p_char_emb)
+            p_char_emb = tf.reshape(self.p_char_emb, (shapes[0]*shapes[1], shapes[2], self.char_vocab.embed_dim))
+            p_char_length = tf.reshape(self.p_char_length, [-1])
+            self.p_char_encodes, self.p_char_state = rnn('bi-lstm', p_char_emb, p_char_length, self.hidden_size)
+            self.p_char_state = tf.reshape(tf.concat(self.p_char_state, axis=1), (shapes[0], shapes[1], self.hidden_size*2))
+            
+        with tf.variable_scope('question_char_encoding'):
+            shapes = tf.shape(self.q_char_emb)
+            q_char_emb = tf.reshape(self.q_char_emb, (shapes[0]*shapes[1], shapes[2], self.char_vocab.embed_dim))
+            q_char_length = tf.reshape(self.q_char_length, [-1])
+            self.q_char_encodes, self.q_char_state = rnn('bi-lstm', q_char_emb, q_char_length, self.hidden_size)
+            self.q_char_state = tf.reshape(tf.concat(self.q_char_state, axis=1), (shapes[0], shapes[1], self.hidden_size*2))
+
+        if self.use_dropout:
+            self.p_char_state = tf.nn.dropout(self.p_char_state, self.dropout_keep_prob)
+            self.q_char_state = tf.nn.dropout(self.q_char_state, self.dropout_keep_prob)
+    
+    def _combine_encode(self, p_emb, q_emb):
+        """
+        Employs two Bi-LSTMs to encode passage and question separately
+        """
+        with tf.variable_scope('passage_encoding'):
+            self.sep_p_encodes, _ = rnn('bi-lstm', p_emb, self.p_length, self.hidden_size)
+        with tf.variable_scope('question_encoding'):
+            self.sep_q_encodes, _ = rnn('bi-lstm', q_emb, self.q_length, self.hidden_size)
+        if self.use_dropout:
+            self.sep_p_encodes = tf.nn.dropout(self.sep_p_encodes, self.dropout_keep_prob)
+            self.sep_q_encodes = tf.nn.dropout(self.sep_q_encodes, self.dropout_keep_prob)
 
     def _embed(self):
         """
@@ -117,6 +185,7 @@ class RCModel(object):
             )
             self.p_emb = tf.nn.embedding_lookup(self.word_embeddings, self.p)
             self.q_emb = tf.nn.embedding_lookup(self.word_embeddings, self.q)
+    
 
     def _encode(self):
         """
@@ -229,9 +298,19 @@ class RCModel(object):
                          self.q: batch['question_token_ids'],
                          self.p_length: batch['passage_length'],
                          self.q_length: batch['question_length'],
+
+                         self.p_char: batch['passage_char_ids'],
+                         self.q_char: batch['question_char_ids'],
+                         self.p_char_length: batch['passage_char_length'],
+                         self.q_char_length: batch['question_char_length'],
+
                          self.start_label: batch['start_id'],
                          self.end_label: batch['end_id'],
                          self.dropout_keep_prob: dropout_keep_prob}
+            #ks = sorted(batch.keys())
+            #for k in ks:
+            #    print(k,np.array(batch[k]).shape, np.array(batch[k]).dtype)
+            #print('****************')
             _, loss = self.sess.run([self.train_op, self.loss], feed_dict)
             total_loss += loss * len(batch['raw_data'])
             total_num += len(batch['raw_data'])
@@ -257,6 +336,7 @@ class RCModel(object):
         """
         pad_id = self.vocab.get_id(self.vocab.pad_token)
         max_bleu_4 = 0
+
         for epoch in range(1, epochs + 1):
             self.logger.info('Training the model for epoch {}'.format(epoch))
             train_batches = data.gen_mini_batches('train', batch_size, pad_id, shuffle=True)
@@ -296,6 +376,12 @@ class RCModel(object):
                          self.q: batch['question_token_ids'],
                          self.p_length: batch['passage_length'],
                          self.q_length: batch['question_length'],
+                         
+                         self.p_char: batch['passage_char_ids'],
+                         self.q_char: batch['question_char_ids'],
+                         self.p_char_length: batch['passage_char_length'],
+                         self.q_char_length: batch['question_char_length'],
+                         
                          self.start_label: batch['start_id'],
                          self.end_label: batch['end_id'],
                          self.dropout_keep_prob: 1.0}

@@ -67,6 +67,8 @@ def parse_args():
                                 help='choose the algorithm to use')
     model_settings.add_argument('--embed_size', type=int, default=300,
                                 help='size of the embeddings')
+    model_settings.add_argument('--char_embed_size', type=int, default=300,
+                                help='size of the char_embeddings')
     model_settings.add_argument('--hidden_size', type=int, default=150,
                                 help='size of LSTM hidden units')
     model_settings.add_argument('--max_p_num', type=int, default=5,
@@ -120,21 +122,35 @@ def prepare(args):
     brc_data = BRCDataset(args.max_p_num, args.max_p_len, args.max_q_len,
                           args.train_files, args.dev_files, args.test_files)
     vocab = Vocab(lower=True)
+    char_vocab = Vocab(lower=True)
+    fout = open(os.path.join(args.vocab_dir, 'word.txt'), 'w')
     for word in brc_data.word_iter('train'):
         vocab.add(word)
+        for char in list(word):
+            char_vocab.add(char)
+        fout.write(word + ', ' + ' '.join(list(word)) + '\n')
+    fout.close()
+
 
     unfiltered_vocab_size = vocab.size()
     vocab.filter_tokens_by_cnt(min_cnt=2)
     filtered_num = unfiltered_vocab_size - vocab.size()
     logger.info('After filter {} tokens, the final vocab size is {}'.format(filtered_num,
                                                                             vocab.size()))
+    
+    logger.info('The final char vocab size is {}'.format(char_vocab.size()))
 
     logger.info('Assigning embeddings...')
     vocab.randomly_init_embeddings(args.embed_size)
+    char_vocab.randomly_init_embeddings(args.char_embed_size)
 
     logger.info('Saving vocab...')
     with open(os.path.join(args.vocab_dir, 'vocab.data'), 'wb') as fout:
         pickle.dump(vocab, fout)
+    
+    logger.info('Saving char vocab...')
+    with open(os.path.join(args.vocab_dir, 'char_vocab.data'), 'wb') as fout:
+        pickle.dump(char_vocab, fout)
 
     logger.info('Done with preparing!')
 
@@ -147,10 +163,20 @@ def train(args):
     logger.info('Load data_set and vocab...')
     with open(os.path.join(args.vocab_dir, 'vocab.data'), 'rb') as fin:
         vocab = pickle.load(fin)
+    with open(os.path.join(args.vocab_dir, 'char_vocab.data'), 'rb') as fin:
+        char_vocab = pickle.load(fin)
+
     brc_data = BRCDataset(args.max_p_num, args.max_p_len, args.max_q_len,
                           args.train_files, args.dev_files)
     logger.info('Converting text into ids...')
     brc_data.convert_to_ids(vocab)
+    
+    logger.info('Converting text into char ids...')
+    brc_data.convert_to_char_ids(char_vocab)
+
+    logger.info('Binding char_vocab to args to pass to RCModel')
+    args.char_vocab = char_vocab
+
     logger.info('Initialize the model...')
     rc_model = RCModel(vocab, args)
     logger.info('Training the model...')

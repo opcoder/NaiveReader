@@ -23,6 +23,8 @@ import json
 import logging
 import numpy as np
 from collections import Counter
+import itertools
+import numpy as np
 
 
 class BRCDataset(object):
@@ -35,6 +37,8 @@ class BRCDataset(object):
         self.max_p_num = max_p_num
         self.max_p_len = max_p_len
         self.max_q_len = max_q_len
+        self.max_p_char_len = 2 # max num of chars in each token
+        self.max_q_char_len = 2 
 
         self.train_set, self.dev_set, self.test_set = [], [], []
         if train_files:
@@ -115,6 +119,12 @@ class BRCDataset(object):
                       'question_length': [],
                       'passage_token_ids': [],
                       'passage_length': [],
+                      
+                      'question_char_ids': [],
+                      'question_char_length': [], # num of chars in each token
+                      'passage_char_ids': [],
+                      'passage_char_length': [], # num of chars in each token
+
                       'start_id': [],
                       'end_id': []}
         max_passage_num = max([len(sample['passages']) for sample in batch_data['raw_data']])
@@ -126,13 +136,27 @@ class BRCDataset(object):
                     batch_data['question_length'].append(len(sample['question_token_ids']))
                     passage_token_ids = sample['passages'][pidx]['passage_token_ids']
                     batch_data['passage_token_ids'].append(passage_token_ids)
-                    batch_data['passage_length'].append(min(len(passage_token_ids), self.max_p_len))
+                    passage_length = min(len(passage_token_ids), self.max_p_len)
+                    batch_data['passage_length'].append(passage_length)
+
+                    batch_data['question_char_ids'].append(sample['question_char_ids'])
+                    batch_data['question_char_length'].append([len(char_ids) for char_ids in sample['question_char_ids']])
+                    passage_char_ids = sample['passages'][pidx]['passage_char_ids']
+                    batch_data['passage_char_ids'].append(passage_char_ids)
+                    batch_data['passage_char_length'].append([len(char_ids) for char_ids in passage_char_ids])
                 else:
                     batch_data['question_token_ids'].append([])
                     batch_data['question_length'].append(0)
                     batch_data['passage_token_ids'].append([])
                     batch_data['passage_length'].append(0)
+
+                    batch_data['question_char_ids'].append([[]])
+                    batch_data['question_char_length'].append([0])
+                    batch_data['passage_char_ids'].append([[]])
+                    batch_data['passage_char_length'].append([0])
+
         batch_data, padded_p_len, padded_q_len = self._dynamic_padding(batch_data, pad_id)
+        batch_data, padded_p_char_len, padded_q_char_len = self._dynamic_char_padding(batch_data, padded_p_len, padded_q_len, pad_id)
         for sample in batch_data['raw_data']:
             if 'answer_passages' in sample and len(sample['answer_passages']):
                 gold_passage_offset = padded_p_len * sample['answer_passages'][0]
@@ -143,6 +167,38 @@ class BRCDataset(object):
                 batch_data['start_id'].append(0)
                 batch_data['end_id'].append(0)
         return batch_data
+    
+    def _dynamic_char_padding(self, batch_data, pad_p_len, pad_q_len, pad_id):
+        # batch, p_len, p_char_len
+        batch_size = len(batch_data['passage_char_ids'])
+        pad_p_char_len = min(self.max_p_char_len, max(itertools.chain(*batch_data['passage_char_length'])))
+        pad_q_char_len = min(self.max_q_char_len, max(itertools.chain(*batch_data['question_char_length'])))
+
+        for b_ix in range(batch_size):
+            p_char_ids = batch_data['passage_char_ids'][b_ix][:pad_p_len]
+            p_char_len = batch_data['passage_char_length'][b_ix][:pad_p_len]
+            q_char_ids = batch_data['question_char_ids'][b_ix][:pad_q_len]
+            q_char_len = batch_data['question_char_length'][b_ix][:pad_q_len]
+            
+            padded_p_char_ids = np.ones([pad_p_len, pad_p_char_len], dtype = np.int64) * pad_id
+            padded_p_char_len = np.zeros(pad_p_len, dtype = np.int64)
+            padded_q_char_ids = np.ones([pad_q_len, pad_q_char_len], dtype = np.int64) * pad_id
+            padded_q_char_len = np.zeros(pad_q_len, dtype = np.int64)
+
+            for token_ix in range(len(p_char_ids)):
+                ids = p_char_ids[token_ix][:pad_p_char_len]
+                padded_p_char_ids[token_ix][:len(ids)] = ids
+                padded_p_char_len[token_ix] = len(ids)
+            for token_ix in range(len(q_char_ids)):
+                ids = q_char_ids[token_ix][:pad_q_char_len]
+                padded_q_char_ids[token_ix][:len(ids)] = ids
+                padded_q_char_len[token_ix] = len(ids)
+            batch_data['passage_char_ids'][b_ix] = padded_p_char_ids
+            batch_data['passage_char_length'][b_ix] = padded_p_char_len
+            batch_data['question_char_ids'][b_ix] = padded_q_char_ids
+            batch_data['question_char_length'][b_ix] = padded_q_char_len
+        return batch_data, pad_p_char_len, pad_q_char_len
+
 
     def _dynamic_padding(self, batch_data, pad_id):
         """
@@ -195,6 +251,21 @@ class BRCDataset(object):
                 sample['question_token_ids'] = vocab.convert_to_ids(sample['question_tokens'])
                 for passage in sample['passages']:
                     passage['passage_token_ids'] = vocab.convert_to_ids(passage['passage_tokens'])
+    def convert_to_char_ids(self, char_vocab):
+        """
+        Convert the question and passage in the original dataset to char ids
+        Args:
+            char_vocab: the characters on this dataset
+        """
+        for data_set in [self.train_set, self.dev_set, self.test_set]:
+            if data_set is None:
+                continue
+            for sample in data_set:
+                sample['question_char_ids'] = [char_vocab.convert_to_ids(list(token))
+                                                        for token in sample['question_tokens']]
+                for passage in sample['passages']:
+                    passage['passage_char_ids'] = [char_vocab.convert_to_ids(list(token))
+                                                        for token in passage['passage_tokens']]
 
     def gen_mini_batches(self, set_name, batch_size, pad_id, shuffle=True):
         """
