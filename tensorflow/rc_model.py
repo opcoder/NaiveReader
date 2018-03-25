@@ -63,6 +63,7 @@ class RCModel(object):
         self.vocab = vocab
         if hasattr(args, 'char_vocab'):
             self.char_vocab = args.char_vocab
+        self.learn_word_embedding = args.learn_word_embedding
 
         # session info
         sess_config = tf.ConfigProto()
@@ -88,17 +89,17 @@ class RCModel(object):
         self._setup_placeholders()
         self._embed()
         
-        self._char_embed()
-        self._char_encode()
-        p_embed = tf.concat((self.p_emb, self.p_char_state), axis = 2)
-        q_embed = tf.concat((self.q_emb, self.q_char_state), axis = 2)
-        self._combine_encode(p_embed, q_embed)
+        #self._char_embed()
+        #self._char_encode()
+        #p_embed = tf.concat((self.p_emb, self.p_char_state), axis = 2)
+        #q_embed = tf.concat((self.q_emb, self.q_char_state), axis = 2)
+        #self._combine_encode(p_embed, q_embed)
 
-        #self._encode()
+        self._encode()
         self._match()
         self._fuse()
         self._decode()
-        self._compute_loss()
+        self._compute_loss_v2()
         self._create_train_op()
         self.logger.info('Time to build graph: {} s'.format(time.time() - start_t))
         param_num = sum([np.prod(self.sess.run(tf.shape(v))) for v in self.all_params])
@@ -114,6 +115,8 @@ class RCModel(object):
         self.q_length = tf.placeholder(tf.int32, [None])
         self.start_label = tf.placeholder(tf.int32, [None])
         self.end_label = tf.placeholder(tf.int32, [None])
+        self.start_label_probs = tf.placeholder(tf.float32, [None, None])
+        self.end_label_probs = tf.placeholder(tf.float32, [None, None])
         self.dropout_keep_prob = tf.placeholder(tf.float32)
         # add char-level embeding
         if hasattr(self, 'char_vocab'):
@@ -181,7 +184,7 @@ class RCModel(object):
                 'word_embeddings',
                 shape=(self.vocab.size(), self.vocab.embed_dim),
                 initializer=tf.constant_initializer(self.vocab.embeddings),
-                trainable=True
+                trainable=self.learn_word_embedding
             )
             self.p_emb = tf.nn.embedding_lookup(self.word_embeddings, self.p)
             self.q_emb = tf.nn.embedding_lookup(self.word_embeddings, self.q)
@@ -241,6 +244,12 @@ class RCModel(object):
                 self.sep_q_encodes,
                 [batch_size, -1, tf.shape(self.sep_q_encodes)[1], 2 * self.hidden_size]
             )[0:, 0, 0:, 0:]
+        #no_dup_question_encodes = tf.Print(no_dup_question_encodes, 
+        #        [
+        #            tf.shape(self.fuse_p_encodes), 
+        #            tf.shape(concat_passage_encodes), 
+        #            tf.shape(self.sep_q_encodes),
+        #            tf.shape(no_dup_question_encodes)], message = 'debug:')
         decoder = PointerNetDecoder(self.hidden_size)
         self.start_probs, self.end_probs = decoder.decode(concat_passage_encodes,
                                                           no_dup_question_encodes)
@@ -249,7 +258,6 @@ class RCModel(object):
         """
         The loss function
         """
-
         def sparse_nll_loss(probs, labels, epsilon=1e-9, scope=None):
             """
             negative log likelyhood loss
@@ -261,6 +269,29 @@ class RCModel(object):
 
         self.start_loss = sparse_nll_loss(probs=self.start_probs, labels=self.start_label)
         self.end_loss = sparse_nll_loss(probs=self.end_probs, labels=self.end_label)
+        self.all_params = tf.trainable_variables()
+        self.loss = tf.reduce_mean(tf.add(self.start_loss, self.end_loss))
+        if self.weight_decay > 0:
+            with tf.variable_scope('l2_loss'):
+                l2_loss = tf.add_n([tf.nn.l2_loss(v) for v in self.all_params])
+            self.loss += self.weight_decay * l2_loss
+    
+    def _compute_loss_v2(self):
+        """
+        The loss function
+        assume that label is a distribution
+        """
+        def sparse_nll_loss(probs, labels, epsilon=1e-9, scope=None):
+            """
+            negative log likelyhood loss
+            """
+            with tf.name_scope(scope, "log_loss"):
+                #labels = tf.Print(labels, [tf.shape(labels), tf.shape(probs)], 'labels shape:')
+                losses = - tf.reduce_sum(labels * tf.log(probs + epsilon), 1)
+            return losses
+
+        self.start_loss = sparse_nll_loss(probs=self.start_probs, labels=self.start_label_probs)
+        self.end_loss = sparse_nll_loss(probs=self.end_probs, labels=self.end_label_probs)
         self.all_params = tf.trainable_variables()
         self.loss = tf.reduce_mean(tf.add(self.start_loss, self.end_loss))
         if self.weight_decay > 0:
@@ -283,6 +314,20 @@ class RCModel(object):
         else:
             raise NotImplementedError('Unsupported optimizer: {}'.format(self.optim_type))
         self.train_op = self.optimizer.minimize(self.loss)
+    
+    def _get_label_probs(self, labels, depth, keep_thresh=0.5, fill_value=0):
+        sigma = 3
+        sigma2 = sigma**2
+        f = lambda i, label: np.exp(-(i-label)**2/(2*sigma2)) if label > 0 else fill_value
+        label_probs = []
+        for label in labels:
+            dist = np.array([f(i, label) for i in range(depth)])
+            label_probs.append(dist)
+        #label_probs = np.concatenate(label_probs, axis=0)
+        label_probs = np.vstack(label_probs)
+        #print('label_probs shape:{}'.format(label_probs.shape))
+        label_probs[label_probs < keep_thresh] = fill_value
+        return label_probs
 
     def _train_epoch(self, train_batches, dropout_keep_prob):
         """
@@ -294,23 +339,27 @@ class RCModel(object):
         total_num, total_loss = 0, 0
         log_every_n_batch, n_batch_loss = 50, 0
         for bitx, batch in enumerate(train_batches, 1):
+            passage_len = len(batch['passage_token_ids'][0])
+            label_batch = len(batch['start_id'])
+            all_passage = len(batch['passage_token_ids'])
+            concat_passage_len = all_passage / label_batch * passage_len
+            #print('passage shape:{}'.format(np.array(batch['passage_token_ids']).shape))
             feed_dict = {self.p: batch['passage_token_ids'],
                          self.q: batch['question_token_ids'],
                          self.p_length: batch['passage_length'],
                          self.q_length: batch['question_length'],
-
+                         self.start_label: batch['start_id'],
+                         self.end_label: batch['end_id'],
+                         self.start_label_probs: self._get_label_probs(batch['start_id'], concat_passage_len),
+                         self.end_label_probs: self._get_label_probs(batch['end_id'], concat_passage_len),
+                         self.dropout_keep_prob: dropout_keep_prob}
+            if hasattr(self, 'char_vocab'):
+                char_input = {
                          self.p_char: batch['passage_char_ids'],
                          self.q_char: batch['question_char_ids'],
                          self.p_char_length: batch['passage_char_length'],
                          self.q_char_length: batch['question_char_length'],
-
-                         self.start_label: batch['start_id'],
-                         self.end_label: batch['end_id'],
-                         self.dropout_keep_prob: dropout_keep_prob}
-            #ks = sorted(batch.keys())
-            #for k in ks:
-            #    print(k,np.array(batch[k]).shape, np.array(batch[k]).dtype)
-            #print('****************')
+                    }
             _, loss = self.sess.run([self.train_op, self.loss], feed_dict)
             total_loss += loss * len(batch['raw_data'])
             total_num += len(batch['raw_data'])
@@ -372,19 +421,27 @@ class RCModel(object):
         pred_answers, ref_answers = [], []
         total_loss, total_num = 0, 0
         for b_itx, batch in enumerate(eval_batches):
+            passage_len = len(batch['passage_token_ids'][0])
+            label_batch = len(batch['start_id'])
+            all_passage = len(batch['passage_token_ids'])
+            concat_passage_len = all_passage / label_batch * passage_len
             feed_dict = {self.p: batch['passage_token_ids'],
                          self.q: batch['question_token_ids'],
                          self.p_length: batch['passage_length'],
                          self.q_length: batch['question_length'],
-                         
+                         self.start_label: batch['start_id'],
+                         self.end_label: batch['end_id'],
+                         self.start_label_probs: self._get_label_probs(batch['start_id'], concat_passage_len),
+                         self.end_label_probs: self._get_label_probs(batch['end_id'], concat_passage_len),
+                         self.dropout_keep_prob: 1.0}
+            if hasattr(self, 'char_vocab'):
+                char_input = {
                          self.p_char: batch['passage_char_ids'],
                          self.q_char: batch['question_char_ids'],
                          self.p_char_length: batch['passage_char_length'],
                          self.q_char_length: batch['question_char_length'],
-                         
-                         self.start_label: batch['start_id'],
-                         self.end_label: batch['end_id'],
-                         self.dropout_keep_prob: 1.0}
+                    }
+                feed_dict.update(char_input)
             start_probs, end_probs, loss = self.sess.run([self.start_probs,
                                                           self.end_probs, self.loss], feed_dict)
 

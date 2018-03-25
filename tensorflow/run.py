@@ -18,19 +18,32 @@
 This module prepares and runs the whole system.
 """
 
+#import importlib
 import sys
-reload(sys)
-sys.setdefaultencoding('utf8')
+#importlib.reload(sys)
+#sys.setdefaultencoding('utf8')
 sys.path.append('..')
+sys.path.append('../utils')
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+import log_helper
+log_helper.init_log('brc')
+
 import pickle
 import argparse
 import logging
 from dataset import BRCDataset
 from vocab import Vocab
 from rc_model import RCModel
+import gensim
 
+def str2bool(v):
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 def parse_args():
     """
@@ -69,6 +82,8 @@ def parse_args():
                                 help='size of the embeddings')
     model_settings.add_argument('--char_embed_size', type=int, default=300,
                                 help='size of the char_embeddings')
+    model_settings.add_argument('--use_char_embed', type=bool, default=False,
+                                help='wether use char_embeddings')
     model_settings.add_argument('--hidden_size', type=int, default=150,
                                 help='size of LSTM hidden units')
     model_settings.add_argument('--max_p_num', type=int, default=5,
@@ -79,6 +94,13 @@ def parse_args():
                                 help='max length of question')
     model_settings.add_argument('--max_a_len', type=int, default=200,
                                 help='max length of answer')
+    model_settings.add_argument('--word2vec_path', type=str, default='',
+                                help='path to word2vec')
+    model_settings.add_argument('--learn_word_embedding', type=str2bool, default='1',
+                                help='wether to learn word embedding or not')
+    
+    model_settings.add_argument('--min_cnt', type=int, default=2,
+                                help='minimum count of valid word')
 
     path_settings = parser.add_argument_group('path settings')
     path_settings.add_argument('--train_files', nargs='+',
@@ -122,35 +144,44 @@ def prepare(args):
     brc_data = BRCDataset(args.max_p_num, args.max_p_len, args.max_q_len,
                           args.train_files, args.dev_files, args.test_files)
     vocab = Vocab(lower=True)
-    char_vocab = Vocab(lower=True)
+    if args.use_char_embed:
+        char_vocab = Vocab(lower=True)
     fout = open(os.path.join(args.vocab_dir, 'word.txt'), 'w')
     for word in brc_data.word_iter('train'):
+        if word == 'mosi':
+            print('xxxxxxxxxx:%s\n' % word)
         vocab.add(word)
-        for char in list(word):
-            char_vocab.add(char)
+        if args.use_char_embed:
+            for char in list(word):
+                char_vocab.add(char)
         fout.write(word + ', ' + ' '.join(list(word)) + '\n')
     fout.close()
+    idx = vocab.get_id('mosi')
+    print('yyyyyyyy:mosi_idx:%d\n' % idx)
 
 
     unfiltered_vocab_size = vocab.size()
-    vocab.filter_tokens_by_cnt(min_cnt=2)
+    vocab.filter_tokens_by_cnt(min_cnt=args.min_cnt)
+    logger.info('min_cnt = %d ' % args.min_cnt)
     filtered_num = unfiltered_vocab_size - vocab.size()
     logger.info('After filter {} tokens, the final vocab size is {}'.format(filtered_num,
                                                                             vocab.size()))
     
-    logger.info('The final char vocab size is {}'.format(char_vocab.size()))
+    #logger.info('The final char vocab size is {}'.format(char_vocab.size()))
 
     logger.info('Assigning embeddings...')
     vocab.randomly_init_embeddings(args.embed_size)
-    char_vocab.randomly_init_embeddings(args.char_embed_size)
+    if args.use_char_embed:
+        char_vocab.randomly_init_embeddings(args.char_embed_size)
 
     logger.info('Saving vocab...')
     with open(os.path.join(args.vocab_dir, 'vocab.data'), 'wb') as fout:
         pickle.dump(vocab, fout)
     
-    logger.info('Saving char vocab...')
-    with open(os.path.join(args.vocab_dir, 'char_vocab.data'), 'wb') as fout:
-        pickle.dump(char_vocab, fout)
+    if args.use_char_embed:
+        logger.info('Saving char vocab...')
+        with open(os.path.join(args.vocab_dir, 'char_vocab.data'), 'wb') as fout:
+            pickle.dump(char_vocab, fout)
 
     logger.info('Done with preparing!')
 
@@ -163,19 +194,27 @@ def train(args):
     logger.info('Load data_set and vocab...')
     with open(os.path.join(args.vocab_dir, 'vocab.data'), 'rb') as fin:
         vocab = pickle.load(fin)
-    with open(os.path.join(args.vocab_dir, 'char_vocab.data'), 'rb') as fin:
-        char_vocab = pickle.load(fin)
+    if args.word2vec_path:
+        logger.info('learn_word_embedding:{}'.format(args.learn_word_embedding))
+        logger.info('loadding %s \n' % args.word2vec_path)
+        word2vec = gensim.models.Word2Vec.load(args.word2vec_path)
+        vocab.load_pretrained_embeddings_from_w2v(word2vec.wv)
+        logger.info('load pretrained embedding from %s done\n' % args.word2vec_path)
+
+    if args.use_char_embed:
+        with open(os.path.join(args.vocab_dir, 'char_vocab.data'), 'rb') as fin:
+            char_vocab = pickle.load(fin)
 
     brc_data = BRCDataset(args.max_p_num, args.max_p_len, args.max_q_len,
                           args.train_files, args.dev_files)
     logger.info('Converting text into ids...')
     brc_data.convert_to_ids(vocab)
     
-    logger.info('Converting text into char ids...')
-    brc_data.convert_to_char_ids(char_vocab)
-
-    logger.info('Binding char_vocab to args to pass to RCModel')
-    args.char_vocab = char_vocab
+    if args.use_char_embed:
+        logger.info('Converting text into char ids...')
+        brc_data.convert_to_char_ids(char_vocab)
+        logger.info('Binding char_vocab to args to pass to RCModel')
+        args.char_vocab = char_vocab
 
     logger.info('Initialize the model...')
     rc_model = RCModel(vocab, args)
@@ -241,6 +280,7 @@ def run():
     args = parse_args()
 
     logger = logging.getLogger("brc")
+    '''
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     if args.log_path:
@@ -253,7 +293,7 @@ def run():
         console_handler.setLevel(logging.INFO)
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
-
+    '''
     logger.info('Running with args : {}'.format(args))
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"

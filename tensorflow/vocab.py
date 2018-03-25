@@ -19,7 +19,8 @@ This module implements the Vocab class for converting string to id and back
 """
 
 import numpy as np
-
+import logging
+logger = logging.getLogger('brc')
 
 class Vocab(object):
     """
@@ -136,6 +137,46 @@ class Vocab(object):
         self.embeddings = np.random.rand(self.size(), embed_dim)
         for token in [self.pad_token, self.unk_token]:
             self.embeddings[self.get_id(token)] = np.zeros([self.embed_dim])
+
+    def load_pretrained_embeddings_from_w2v(self, w2v):
+        """
+        loads the pretrained embeddings from word2vec,
+        tokens not in pretrained word2vec will be filtered
+        Args:
+            w2v: dict of word2vec
+        """
+        trained_embeddings = {}
+        absent_count = 0
+        if self.lower:
+            temp = {}
+            for token in w2v.vocab:
+                temp[token.lower()] = w2v[token]
+            w2v = temp
+
+        for token in self.token2id:
+            if token not in w2v:
+                logger.info('%s not exists in w2v' % token)
+                absent_count += 1
+                continue
+            trained_embeddings[token] = w2v[token]
+            if self.embed_dim is None:
+                logger.info('embed_dim is None, set embed_dim to be the word2vec dim')
+                self.embed_dim = len(w2v[token]) - 1
+        logger.info('load pretrained word2vec done, %d of vocab is absent' % absent_count)
+        filtered_tokens = trained_embeddings.keys()
+        # rebuild the token x id map
+        self.token2id = {}
+        self.id2token = {}
+        for token in self.initial_tokens:
+            self.add(token, cnt=0)
+        for token in filtered_tokens:
+            self.add(token, cnt=0)
+        # load embeddings
+        self.embeddings = np.zeros([self.size(), self.embed_dim])
+        for token in self.token2id.keys():
+            if token in trained_embeddings:
+                self.embeddings[self.get_id(token)] = trained_embeddings[token]
+
 
     def load_pretrained_embeddings(self, embedding_path):
         """

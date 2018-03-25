@@ -37,8 +37,10 @@ class BRCDataset(object):
         self.max_p_num = max_p_num
         self.max_p_len = max_p_len
         self.max_q_len = max_q_len
-        self.max_p_char_len = 2 # max num of chars in each token
-        self.max_q_char_len = 2 
+        self.use_char = False
+        if self.use_char:
+            self.max_p_char_len = 2 # max num of chars in each token
+            self.max_q_char_len = 2 
 
         self.train_set, self.dev_set, self.test_set = [], [], []
         if train_files:
@@ -119,14 +121,16 @@ class BRCDataset(object):
                       'question_length': [],
                       'passage_token_ids': [],
                       'passage_length': [],
-                      
+                      'start_id': [],
+                      'end_id': []}
+        if hasattr(self, 'use_char'):
+            batch_data.update({
                       'question_char_ids': [],
                       'question_char_length': [], # num of chars in each token
                       'passage_char_ids': [],
                       'passage_char_length': [], # num of chars in each token
+                      })
 
-                      'start_id': [],
-                      'end_id': []}
         max_passage_num = max([len(sample['passages']) for sample in batch_data['raw_data']])
         max_passage_num = min(self.max_p_num, max_passage_num)
         for sidx, sample in enumerate(batch_data['raw_data']):
@@ -139,24 +143,27 @@ class BRCDataset(object):
                     passage_length = min(len(passage_token_ids), self.max_p_len)
                     batch_data['passage_length'].append(passage_length)
 
-                    batch_data['question_char_ids'].append(sample['question_char_ids'])
-                    batch_data['question_char_length'].append([len(char_ids) for char_ids in sample['question_char_ids']])
-                    passage_char_ids = sample['passages'][pidx]['passage_char_ids']
-                    batch_data['passage_char_ids'].append(passage_char_ids)
-                    batch_data['passage_char_length'].append([len(char_ids) for char_ids in passage_char_ids])
+                    if self.use_char:
+                        batch_data['question_char_ids'].append(sample['question_char_ids'])
+                        batch_data['question_char_length'].append([len(char_ids) for char_ids in sample['question_char_ids']])
+                        passage_char_ids = sample['passages'][pidx]['passage_char_ids']
+                        batch_data['passage_char_ids'].append(passage_char_ids)
+                        batch_data['passage_char_length'].append([len(char_ids) for char_ids in passage_char_ids])
                 else:
                     batch_data['question_token_ids'].append([])
                     batch_data['question_length'].append(0)
                     batch_data['passage_token_ids'].append([])
                     batch_data['passage_length'].append(0)
 
-                    batch_data['question_char_ids'].append([[]])
-                    batch_data['question_char_length'].append([0])
-                    batch_data['passage_char_ids'].append([[]])
-                    batch_data['passage_char_length'].append([0])
+                    if self.use_char:
+                        batch_data['question_char_ids'].append([[]])
+                        batch_data['question_char_length'].append([0])
+                        batch_data['passage_char_ids'].append([[]])
+                        batch_data['passage_char_length'].append([0])
 
         batch_data, padded_p_len, padded_q_len = self._dynamic_padding(batch_data, pad_id)
-        batch_data, padded_p_char_len, padded_q_char_len = self._dynamic_char_padding(batch_data, padded_p_len, padded_q_len, pad_id)
+        if self.use_char:
+            batch_data, padded_p_char_len, padded_q_char_len = self._dynamic_char_padding(batch_data, padded_p_len, padded_q_len, pad_id)
         for sample in batch_data['raw_data']:
             if 'answer_passages' in sample and len(sample['answer_passages']):
                 gold_passage_offset = padded_p_len * sample['answer_passages'][0]
