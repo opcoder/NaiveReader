@@ -155,8 +155,11 @@ class PointerNetDecoder(object):
             fake_inputs = tf.zeros([tf.shape(passage_vectors)[0], 2, 1])  # not used
             sequence_len = tf.tile([2], [tf.shape(passage_vectors)[0]])
             if init_with_question:
-                random_attn_vector = tf.Variable(tf.random_normal([1, self.hidden_size]),
-                                                 trainable=True, name="random_attn_vector")
+                #random_attn_vector = tf.Variable(tf.random_normal([1, self.hidden_size]),
+                #                                 trainable=True, name="random_attn_vector")
+                random_attn_vector = tf.get_variable("random_attn_vector",
+                                                    initializer = tf.random_normal([1, self.hidden_size]),
+                                                    trainable=True)
                 pooled_question_rep = tc.layers.fully_connected(
                     attend_pooling(question_vectors, random_attn_vector, self.hidden_size),
                     num_outputs=self.hidden_size, activation_fn=None

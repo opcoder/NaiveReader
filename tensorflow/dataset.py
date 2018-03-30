@@ -274,6 +274,18 @@ class BRCDataset(object):
                     passage['passage_char_ids'] = [char_vocab.convert_to_ids(list(token))
                                                         for token in passage['passage_tokens']]
 
+    def size(self, set_name):
+        if set_name == 'train':
+            data = self.train_set
+        elif set_name == 'dev':
+            data = self.dev_set
+        elif set_name == 'test':
+            data = self.test_set
+        else:
+            raise NotImplementedError('No data set named as {}'.format(set_name))
+        data_size = len(data)
+        return data_size
+
     def gen_mini_batches(self, set_name, batch_size, pad_id, shuffle=True):
         """
         Generate data batches for a specific dataset (train/dev/test)
@@ -297,6 +309,7 @@ class BRCDataset(object):
         indices = np.arange(data_size)
         if shuffle:
             np.random.shuffle(indices)
+        data_size = data_size // batch_size * batch_size
         for batch_start in np.arange(0, data_size, batch_size):
             batch_indices = indices[batch_start: batch_start + batch_size]
             yield self._one_mini_batch(data, batch_indices, pad_id)

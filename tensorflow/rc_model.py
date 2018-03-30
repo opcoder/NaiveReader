@@ -130,7 +130,8 @@ class RCModel(object):
         """
         The character-level embedding
         """
-        with tf.device('/cpu:0'), tf.variable_scope('char_embedding'):
+        #with tf.device('/cpu:0'), tf.variable_scope('char_embedding'):
+        with tf.variable_scope('char_embedding'):
             self.char_embeddings = tf.get_variable(
                 'char_embeddings',
                 shape=(self.char_vocab.size(), self.char_vocab.embed_dim),
@@ -179,7 +180,8 @@ class RCModel(object):
         """
         The embedding layer, question and passage share embeddings
         """
-        with tf.device('/cpu:0'), tf.variable_scope('word_embedding'):
+        #with tf.device('/cpu:0'), tf.variable_scope('word_embedding'):
+        with tf.variable_scope('word_embedding'):
             self.word_embeddings = tf.get_variable(
                 'word_embeddings',
                 shape=(self.vocab.size(), self.vocab.embed_dim),
@@ -406,7 +408,7 @@ class RCModel(object):
                 else:
                     self.logger.warning('No dev set is loaded for evaluation in the dataset!')
             else:
-                self.save(save_dir, save_prefix + '_' + str(epoch))
+                self.save(save_dir, save_prefix)
 
     def evaluate(self, eval_batches, result_dir=None, result_prefix=None, save_full_info=False):
         """

@@ -18,6 +18,7 @@
 This module prepares and runs the whole system.
 """
 
+import os
 #import importlib
 import sys
 #importlib.reload(sys)
@@ -35,7 +36,10 @@ import logging
 from dataset import BRCDataset
 from vocab import Vocab
 from rc_model import RCModel
+from model_helper_v1 import ModelHelper
 import gensim
+
+logger = logging.getLogger("brc")
 
 def str2bool(v):
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -66,6 +70,10 @@ def parse_args():
                                 help='optimizer type')
     train_settings.add_argument('--learning_rate', type=float, default=0.001,
                                 help='learning rate')
+    train_settings.add_argument('--decay_epochs', type=int, default=3,
+                                help='epochs to decay')
+    train_settings.add_argument('--decay_rate', type=float, default=0.1,
+                                help='rate to decay')
     train_settings.add_argument('--weight_decay', type=float, default=0,
                                 help='weight decay')
     train_settings.add_argument('--dropout_keep_prob', type=float, default=1,
@@ -207,6 +215,8 @@ def train(args):
 
     brc_data = BRCDataset(args.max_p_num, args.max_p_len, args.max_q_len,
                           args.train_files, args.dev_files)
+    steps_per_epoch = brc_data.size('train') // args.batch_size
+    args.decay_steps = args.decay_epochs * steps_per_epoch 
     logger.info('Converting text into ids...')
     brc_data.convert_to_ids(vocab)
     
@@ -216,9 +226,10 @@ def train(args):
         logger.info('Binding char_vocab to args to pass to RCModel')
         args.char_vocab = char_vocab
 
+    RCModel = choose_model_by_gpu_setting(args)
     logger.info('Initialize the model...')
     rc_model = RCModel(vocab, args)
-    logger.info('Training the model...')
+    logger.info('Training the model...{}'.format(RCModel.__name__))
     rc_model.train(brc_data, args.epochs, args.batch_size, save_dir=args.model_dir,
                    save_prefix=args.algo,
                    dropout_keep_prob=args.dropout_keep_prob)
@@ -235,16 +246,20 @@ def evaluate(args):
         vocab = pickle.load(fin)
     assert len(args.dev_files) > 0, 'No dev files are provided.'
     brc_data = BRCDataset(args.max_p_num, args.max_p_len, args.max_q_len, dev_files=args.dev_files)
+    steps_per_epoch = brc_data.size('dev') // args.batch_size
+    args.decay_steps = args.decay_epochs * steps_per_epoch 
     logger.info('Converting text into ids...')
     brc_data.convert_to_ids(vocab)
     logger.info('Restoring the model...')
+    RCModel = choose_model_by_gpu_setting(args)
     rc_model = RCModel(vocab, args)
+    logger.info('Restoring the model...{}'.format(RCModel.__name__))
     rc_model.restore(model_dir=args.model_dir, model_prefix=args.algo)
     logger.info('Evaluating the model on dev set...')
     dev_batches = brc_data.gen_mini_batches('dev', args.batch_size,
                                             pad_id=vocab.get_id(vocab.pad_token), shuffle=False)
     dev_loss, dev_bleu_rouge = rc_model.evaluate(
-        dev_batches, result_dir=args.result_dir, result_prefix='dev.predicted')
+        dev_batches, result_dir=args.result_dir, result_prefix='dev.predicted', save_full_info=False)
     logger.info('Loss on dev set: {}'.format(dev_loss))
     logger.info('Result on dev set: {}'.format(dev_bleu_rouge))
     logger.info('Predicted answers are saved to {}'.format(os.path.join(args.result_dir)))
@@ -273,13 +288,31 @@ def predict(args):
                       result_dir=args.result_dir, result_prefix='test.predicted')
 
 
+def choose_model_by_gpu_setting(args):
+    model = RCModel
+    gpus = eval(os.environ['CUDA_VISIBLE_DEVICES'])
+    if isinstance(gpus, int):
+        gpus = gpus,
+    args.gpus = args.gpu = gpus
+    logger.info('gpus:{}'.format(args.gpus))
+    if len(gpus) >= 1:
+        model = ModelHelper
+        logger.info('using parallel training mode')
+    else:
+        logger.info('using single gpu training mode')
+    return model
+
+
 def run():
     """
     Prepares and runs the whole system.
     """
     args = parse_args()
+    choose_model_by_gpu_setting(args)
+    batch_size_per_gpu = args.batch_size
+    args.batch_size = args.batch_size * len(args.gpus)
+    logger.info('batch-size:{}={}*{}'.format(args.batch_size, batch_size_per_gpu, len(args.gpus)))
 
-    logger = logging.getLogger("brc")
     '''
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -297,7 +330,7 @@ def run():
     logger.info('Running with args : {}'.format(args))
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+    #os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
     if args.prepare:
         prepare(args)
