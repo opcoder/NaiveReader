@@ -7,3 +7,4 @@ local
 .idea/
 add_copyright.py
 copyright
+.DS_Store

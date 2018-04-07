@@ -474,7 +474,7 @@ class RCModel(object):
             result_file = os.path.join(result_dir, result_prefix + '.json')
             with open(result_file, 'w') as fout:
                 for pred_answer in pred_answers:
-                    fout.write(json.dumps(pred_answer, encoding='utf8', ensure_ascii=False) + '\n')
+                    fout.write(json.dumps(pred_answer, ensure_ascii=False) + '\n')
 
             self.logger.info('Saving {} results to {}'.format(result_prefix, result_file))
 
@@ -511,8 +511,11 @@ class RCModel(object):
                 best_score = score
                 best_p_idx = p_idx
                 best_span = answer_span
-        best_answer = ''.join(
-            sample['passages'][best_p_idx]['passage_tokens'][best_span[0]: best_span[1] + 1])
+        if best_p_idx is None or best_span is None:
+            best_answer = ''
+        else:
+            best_answer = ''.join(
+                sample['passages'][best_p_idx]['passage_tokens'][best_span[0]: best_span[1] + 1])
         return best_answer
 
     def find_best_answer_for_passage(self, start_probs, end_probs, passage_len=None):

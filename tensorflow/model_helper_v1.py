@@ -286,6 +286,9 @@ class ModelHelper:
 
         if result_dir is not None and result_prefix is not None:
             result_file = os.path.join(result_dir, result_prefix + '.json')
+            dirname = os.path.dirname(result_file)
+            if not os.path.exists(dirname):
+                os.makedirs(dirname)
             with open(result_file, 'w') as fout:
                 for pred_answer in pred_answers:
                     fout.write(json.dumps(pred_answer, encoding='utf8', ensure_ascii=False) + '\n')
@@ -312,7 +315,7 @@ class ModelHelper:
         Finds the best answer for a sample given start_prob and end_prob for each position.
         This will call find_best_answer_for_passage because there are multiple passages in a sample
         """
-        best_p_idx, best_span, best_score = None, None, 0
+        best_p_idx, best_span, best_score = None, None, -1
         for p_idx, passage in enumerate(sample['passages']):
             if p_idx >= self.max_p_num:
                 continue
@@ -325,6 +328,7 @@ class ModelHelper:
                 best_score = score
                 best_p_idx = p_idx
                 best_span = answer_span
+        print('best_p_idx: {}, best_span:{}'.format(best_p_idx, best_span))
         best_answer = ''.join(
             sample['passages'][best_p_idx]['passage_tokens'][best_span[0]: best_span[1] + 1])
         return best_answer

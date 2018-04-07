@@ -23,6 +23,9 @@ import os
 import sys
 #importlib.reload(sys)
 #sys.setdefaultencoding('utf8')
+if sys.version[0] == '2':
+    reload(sys)
+    sys.setdefaultencoding("utf-8")
 sys.path.append('..')
 sys.path.append('../utils')
 import os
@@ -279,6 +282,9 @@ def predict(args):
     logger.info('Converting text into ids...')
     brc_data.convert_to_ids(vocab)
     logger.info('Restoring the model...')
+    steps_per_epoch = brc_data.size('train') // args.batch_size
+    args.decay_steps = args.decay_epochs * steps_per_epoch 
+    RCModel = choose_model_by_gpu_setting(args)
     rc_model = RCModel(vocab, args)
     rc_model.restore(model_dir=args.model_dir, model_prefix=args.algo)
     logger.info('Predicting answers for test set...')
