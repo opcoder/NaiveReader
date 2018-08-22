@@ -1,22 +1,18 @@
 #!/bin/bash
-export PYTHONUSERBASE=/mnt/lustre/wangchangbao/.local
-#source /mnt/lustre/wangchangbao/py3tf1.6/bin/activate
-source /mnt/lustre/share/wangchangbao/workspace/py2tf1.6/bin/activate
-export LD_LIBRARY_PATH=/mnt/lustre/share/nccl_2.1.15-1+cuda9.0_x86_64:/mnt/lustre/share/cuda-9.0/lib64:$LD_LIBRARY_PATH
-export PYTHONPATH=/mnt/lustre/share/wangchangbao/workspace/NaiveReader/utils:/mnt/lustre/share/wangchangbao/workspace/NaiveReader/tensorflow:$PYTHONPATH
 
-root=/mnt/lustre/share/wangchangbao/workspace/NaiveReader/data
-datadir=${root}/datasets/preprocessed
-prefix=search
-#prefix=zhidao
+root=../
+export PYTHONPATH=${root}/utils:${root}/tensorflow:$PYTHONPATH
+
+datadir=/mnt/lustre/share/wangchangbao/datasets/MRC/DuReader/preprocessed/
 algo=BIDAF
 name=$1
 gpu=$2
-model_dir=${root}/${prefix}/models/models_${name}/${algo}
+exp_name=${name}-${gpu}
+model_dir=${exp_name}
 mkdir -p ${model_dir}
 srun -p DSK \
     --gres=gpu:${gpu} -n1 --ntasks-per-node=1 \
-    --job-name=${name}-${gpu} \
+    --job-name=${exp_name} \
     --kill-on-bad-exit=1 \
     python run.py --evaluate --algo ${algo} \
   --model_dir=${model_dir} \

@@ -158,8 +158,8 @@ class ModelHelper:
             passage_len = len(batch['passage_token_ids'][0])
             label_batch = len(batch['start_id'])
             all_passage = len(batch['passage_token_ids'])
-            concat_passage_len = all_passage / label_batch * passage_len
-            #print('passage shape:{}'.format(np.array(batch['passage_token_ids']).shape))
+            concat_passage_len = all_passage // label_batch * passage_len
+            #self.logger.info('passage shape:{}'.format(np.array(batch['passage_token_ids']).shape))
             feed_dict = {self.p: batch['passage_token_ids'],
                          self.q: batch['question_token_ids'],
                          self.p_length: batch['passage_length'],
@@ -240,7 +240,7 @@ class ModelHelper:
             passage_len = len(batch['passage_token_ids'][0])
             label_batch = len(batch['start_id'])
             all_passage = len(batch['passage_token_ids'])
-            concat_passage_len = all_passage / label_batch * passage_len
+            concat_passage_len = all_passage // label_batch * passage_len
             feed_dict = {self.p: batch['passage_token_ids'],
                          self.q: batch['question_token_ids'],
                          self.p_length: batch['passage_length'],
@@ -328,7 +328,7 @@ class ModelHelper:
                 best_score = score
                 best_p_idx = p_idx
                 best_span = answer_span
-        print('best_p_idx: {}, best_span:{}'.format(best_p_idx, best_span))
+        #print('best_p_idx: {}, best_span:{}'.format(best_p_idx, best_span))
         best_answer = ''.join(
             sample['passages'][best_p_idx]['passage_tokens'][best_span[0]: best_span[1] + 1])
         return best_answer
